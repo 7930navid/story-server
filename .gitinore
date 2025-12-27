@@ -1,0 +1,24 @@
+# Node modules
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Environment variables
+.env
+
+# Uploaded videos (server-side)
+videos/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Optional: nodemon config
+nodemon.json
+
+# Optional: IDE/editor files
+.vscode/
+.idea/
