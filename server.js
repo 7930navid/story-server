@@ -15,7 +15,7 @@ const pool = new Pool({
     connectionString: process.env.POSTGRES_URI,
 });
 
-// সার্ভার চালু হলে টেবিল বানানো
+// Table creation with all needed fields
 const createTable = async () => {
     try {
         await pool.query(`
@@ -23,6 +23,10 @@ const createTable = async () => {
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
                 path VARCHAR(500) NOT NULL,
+                caption TEXT,
+                username VARCHAR(100),
+                email VARCHAR(100),
+                avatar VARCHAR(500),
                 created_at TIMESTAMP DEFAULT NOW()
             );
         `);
@@ -33,7 +37,7 @@ const createTable = async () => {
 };
 createTable();
 
-// ভিডিও আপলোডের জন্য multer
+// Multer storage
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
         const dir = "videos/";
@@ -46,26 +50,33 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// ভিডিও আপলোড
-app.post("/upload", upload.single("video"), async (req, res) => {
+// Upload route
+app.post("/upload-story", upload.single("storyVideo"), async (req, res) => {
     if (!req.file) return res.status(400).send("No video uploaded");
 
+    const { caption, username, email, avatar } = req.body;
     const { filename, path: filepath } = req.file;
 
     try {
         await pool.query(
-            "INSERT INTO videos (name, path) VALUES ($1, $2)",
-            [filename, filepath]
+            `INSERT INTO videos (name, path, caption, username, email, avatar) 
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [filename, filepath, caption, username, email, avatar]
         );
-        res.json({ message: "Video uploaded successfully", filename });
+
+        res.json({ 
+            success: true, 
+            message: "Story uploaded successfully", 
+            data: { filename, caption, username, email, avatar }
+        });
     } catch (err) {
         console.error(err);
         res.status(500).send("DB error");
     }
 });
 
-// ভিডিও লিস্ট
-app.get("/videos", async (req, res) => {
+// Fetch all stories
+app.get("/stories", async (req, res) => {
     try {
         const result = await pool.query("SELECT * FROM videos ORDER BY created_at DESC");
         res.json(result.rows);
@@ -75,7 +86,7 @@ app.get("/videos", async (req, res) => {
     }
 });
 
-// ভিডিও স্ট্রিমিং
+// Stream video by ID
 app.get("/video/:id", async (req, res) => {
     try {
         const result = await pool.query("SELECT * FROM videos WHERE id=$1", [req.params.id]);
@@ -115,6 +126,10 @@ app.get("/video/:id", async (req, res) => {
     }
 });
 
-app.listen(process.env.PORT, () => {
-    console.log(`Server running on port ${process.env.PORT}`);
+// Serve uploaded videos statically
+app.use("/videos", express.static(path.join(__dirname, "videos")));
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
+    console.log(`Story server running on port ${PORT}`);
 });
