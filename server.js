@@ -2,133 +2,154 @@ require("dotenv").config();
 const express = require("express");
 const { Pool } = require("pg");
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
 const cors = require("cors");
-const ffmpeg = require("fluent-ffmpeg");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ------------------- Postgres -------------------
-const pool = new Pool({ connectionString: process.env.POSTGRES_URI });
+/* ------------------- PostgreSQL ------------------- */
+const pool = new Pool({
+  connectionString: process.env.POSTGRES_URI,
+  ssl: { rejectUnauthorized: false }
+});
 
-// Create videos table
+/* ------------------- Create Table ------------------- */
 const createTable = async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS videos (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        path VARCHAR(500) NOT NULL,
-        caption TEXT,
-        username VARCHAR(100),
-        email VARCHAR(100),
-        avatar VARCHAR(500),
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-    console.log("Table 'videos' is ready");
-  } catch (err) {
-    console.error("Error creating table:", err);
-  }
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS videos (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      path TEXT NOT NULL,
+      caption TEXT,
+      username VARCHAR(100),
+      email VARCHAR(100),
+      avatar TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      expires_at TIMESTAMP
+    );
+  `);
 };
 createTable();
 
-// ------------------- Multer -------------------
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = "videos/";
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
+/* ------------------- Cloudinary Config ------------------- */
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+/* ------------------- Multer Storage ------------------- */
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "asirnet_stories",
+    resource_type: "video",
+    transformation: [{ height: 720, crop: "scale" }]
+  }
 });
 const upload = multer({ storage });
 
-// ------------------- Upload Story -------------------
+/* ------------------- Upload Story ------------------- */
 app.post("/upload-story", upload.single("storyVideo"), async (req, res) => {
-  if (!req.file) return res.status(400).send("No video uploaded");
-
-  const { caption, username, email, avatar } = req.body;
-  const { filename, path: filepath } = req.file;
-
   try {
-    // 1️⃣ Check video duration
-    ffmpeg.ffprobe(filepath, (err, metadata) => {
-      if(err) return res.status(500).send("Metadata error");
+    const { caption, username, email, avatar } = req.body;
 
-      const duration = metadata.format.duration; // seconds
-      if(duration > 60) { // >1 minute
-        fs.unlinkSync(filepath);
-        return res.status(400).send("Video duration cannot exceed 1 minute");
-      }
+    if (!req.file) {
+      return res.status(400).json({ error: "No video uploaded" });
+    }
 
-      // 2️⃣ Check resolution
-      const videoStream = metadata.streams.find(s => s.codec_type === "video");
-      const height = videoStream.height;
+    const videoUrl = req.file.path;
+    const publicId = req.file.filename;
 
-      if(height > 720){
-        // downscale to 720p
-        const outputPath = `videos/resized-${filename}`;
-        ffmpeg(filepath)
-          .outputOptions(["-vf scale=-2:720","-c:v libx264","-crf 28","-preset fast"])
-          .on("end", async ()=>{
-            fs.unlinkSync(filepath); // remove original
-            await pool.query(
-              `INSERT INTO videos (name,path,caption,username,email,avatar) VALUES($1,$2,$3,$4,$5,$6)`,
-              [`resized-${filename}`, outputPath, caption, username, email, avatar]
-            );
-            res.json({ success:true, message:"Story uploaded & resized ✅" });
-          })
-          .on("error", err => {
-            console.error(err);
-            res.status(500).send("Video processing failed");
-          })
-          .save(outputPath);
-      } else {
-        // already <=720
-        pool.query(
-          `INSERT INTO videos (name,path,caption,username,email,avatar) VALUES($1,$2,$3,$4,$5,$6)`,
-          [filename, filepath, caption, username, email, avatar]
-        ).then(()=>res.json({ success:true, message:"Story uploaded ✅" }))
-         .catch(err=>{ console.error(err); res.status(500).send("DB error"); });
-      }
-    });
-  } catch(err){
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+
+    await pool.query(
+      `INSERT INTO videos (name, path, caption, username, email, avatar, expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [publicId, videoUrl, caption, username, email, avatar, expiresAt]
+    );
+
+    res.json({ success: true, message: "Story uploaded (24h active) ✅" });
+
+  } catch (err) {
     console.error(err);
-    res.status(500).send("Server error");
+    res.status(500).json({ error: "Upload failed" });
   }
 });
 
-// ------------------- Get All Stories -------------------
+/* ------------------- Get Active Stories Only ------------------- */
 app.get("/stories", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM videos ORDER BY created_at DESC");
-    const host = req.headers.host;
-    const protocol = req.protocol;
+    const result = await pool.query(
+      `SELECT * FROM videos 
+       WHERE expires_at > NOW()
+       ORDER BY created_at DESC`
+    );
 
-    const stories = result.rows.map(row => ({
-      id: row.id,
-      username: row.username,
-      email: row.email,
-      avatar: row.avatar,
-      caption: row.caption,
-      created_at: row.created_at,
-      videoURL: `${protocol}://${host}/videos/${path.basename(row.path)}`
-    }));
+    res.json(result.rows);
 
-    res.json(stories);
-  } catch(err){
+  } catch (err) {
     console.error(err);
-    res.status(500).send("DB error");
+    res.status(500).json({ error: "DB error" });
   }
 });
 
-// ------------------- Serve static videos -------------------
-app.use("/videos", express.static(path.join(__dirname, "videos")));
+/* ------------------- Delete All Stories By Email ------------------- */
+app.delete("/delete-my-stories/:email", async (req, res) => {
+  try {
+    const { email } = req.params;
 
-// ------------------- Start Server -------------------
+    const result = await pool.query(
+      "SELECT * FROM videos WHERE email = $1",
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ message: "No stories found" });
+    }
+
+    // Delete from Cloudinary
+    for (let story of result.rows) {
+      await cloudinary.uploader.destroy(story.name, {
+        resource_type: "video"
+      });
+    }
+
+    // Delete from DB
+    await pool.query("DELETE FROM videos WHERE email = $1", [email]);
+
+    res.json({ success: true, message: "All your stories deleted ✅" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Delete failed" });
+  }
+});
+
+/* ------------------- Auto Cleanup Expired Stories ------------------- */
+setInterval(async () => {
+  try {
+    const expired = await pool.query(
+      "SELECT * FROM videos WHERE expires_at <= NOW()"
+    );
+
+    for (let story of expired.rows) {
+      await cloudinary.uploader.destroy(story.name, {
+        resource_type: "video"
+      });
+    }
+
+    await pool.query("DELETE FROM videos WHERE expires_at <= NOW()");
+  } catch (err) {
+    console.error("Cleanup error:", err);
+  }
+}, 60 * 60 * 1000); // every 1 hour
+
+/* ------------------- Server Start ------------------- */
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`Story server running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`Story server running on port ${PORT}`)
+);
