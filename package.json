@@ -1,7 +1,7 @@
 {
   "name": "asirnet-video-server",
   "version": "1.0.0",
-  "description": "Asirnet Video Server with PostgreSQL, upload and streaming support",
+  "description": "Asirnet Video Server with PostgreSQL + Cloudinary upload support",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -13,18 +13,19 @@
     "nodejs",
     "express",
     "postgresql",
-    "streaming",
+    "cloudinary",
     "upload"
   ],
   "author": "Hafez MD. Asir Abrar Khan",
   "license": "MIT",
   "dependencies": {
+    "cloudinary": "^1.41.0",
+    "multer-storage-cloudinary": "^4.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "multer": "^1.4.5-lts.1",
-    "pg": "^8.11.0",
-    "fluent-ffmpeg": "^2.1.2"
+    "pg": "^8.11.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
