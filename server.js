@@ -32,7 +32,6 @@ const createTable = async () => {
     );
   `);
 };
-createTable();
 
 /* ------------------- Cloudinary Config ------------------- */
 cloudinary.config({
@@ -52,104 +51,105 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage });
 
-/* ------------------- Upload Story ------------------- */
-app.post("/upload-story", upload.single("storyVideo"), async (req, res) => {
-  try {
-    const { caption, username, email, avatar } = req.body;
+/* ------------------- Routes ------------------- */
+const setupRoutes = () => {
 
-    if (!req.file) {
-      return res.status(400).json({ error: "No video uploaded" });
+  // Upload story
+  app.post("/upload-story", upload.single("storyVideo"), async (req, res) => {
+    try {
+      const { caption, username, email, avatar } = req.body;
+
+      if (!req.file) return res.status(400).json({ error: "No video uploaded" });
+
+      const videoUrl = req.file.path;
+      const publicId = req.file.filename;
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+
+      await pool.query(
+        `INSERT INTO videos (name, path, caption, username, email, avatar, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [publicId, videoUrl, caption, username, email, avatar, expiresAt]
+      );
+
+      res.json({ success: true, message: "Story uploaded (24h active) ✅" });
+
+    } catch (err) {
+      console.error("Upload error:", err);
+      res.status(500).json({ error: "Upload failed" });
     }
+  });
 
-    const videoUrl = req.file.path;
-    const publicId = req.file.filename;
+  // Get active stories only
+  app.get("/stories", async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT * FROM videos 
+         WHERE expires_at > NOW()
+         ORDER BY created_at DESC`
+      );
 
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+      res.json(result.rows);
 
-    await pool.query(
-      `INSERT INTO videos (name, path, caption, username, email, avatar, expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [publicId, videoUrl, caption, username, email, avatar, expiresAt]
-    );
-
-    res.json({ success: true, message: "Story uploaded (24h active) ✅" });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Upload failed" });
-  }
-});
-
-/* ------------------- Get Active Stories Only ------------------- */
-app.get("/stories", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT * FROM videos 
-       WHERE expires_at > NOW()
-       ORDER BY created_at DESC`
-    );
-
-    res.json(result.rows);
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "DB error" });
-  }
-});
-
-/* ------------------- Delete All Stories By Email ------------------- */
-app.delete("/delete-my-stories/:email", async (req, res) => {
-  try {
-    const { email } = req.params;
-
-    const result = await pool.query(
-      "SELECT * FROM videos WHERE email = $1",
-      [email]
-    );
-
-    if (result.rows.length === 0) {
-      return res.json({ message: "No stories found" });
+    } catch (err) {
+      console.error("Fetch stories error:", err);
+      res.status(500).json({ error: "DB error" });
     }
+  });
 
-    // Delete from Cloudinary
-    for (let story of result.rows) {
-      await cloudinary.uploader.destroy(story.name, {
-        resource_type: "video"
-      });
+  // Delete all stories by email
+  app.delete("/delete-my-stories/:email", async (req, res) => {
+    try {
+      const { email } = req.params;
+
+      const result = await pool.query(
+        "SELECT * FROM videos WHERE email = $1",
+        [email]
+      );
+
+      if (result.rows.length === 0)
+        return res.json({ message: "No stories found" });
+
+      // Delete from Cloudinary
+      for (let story of result.rows) {
+        await cloudinary.uploader.destroy(story.name, { resource_type: "video" });
+      }
+
+      // Delete from DB
+      await pool.query("DELETE FROM videos WHERE email = $1", [email]);
+
+      res.json({ success: true, message: "All your stories deleted ✅" });
+
+    } catch (err) {
+      console.error("Delete error:", err);
+      res.status(500).json({ error: "Delete failed" });
     }
-
-    // Delete from DB
-    await pool.query("DELETE FROM videos WHERE email = $1", [email]);
-
-    res.json({ success: true, message: "All your stories deleted ✅" });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Delete failed" });
-  }
-});
+  });
+};
 
 /* ------------------- Auto Cleanup Expired Stories ------------------- */
-setInterval(async () => {
-  try {
-    const expired = await pool.query(
-      "SELECT * FROM videos WHERE expires_at <= NOW()"
-    );
+const setupAutoCleanup = () => {
+  setInterval(async () => {
+    try {
+      const expired = await pool.query("SELECT * FROM videos WHERE expires_at <= NOW()");
 
-    for (let story of expired.rows) {
-      await cloudinary.uploader.destroy(story.name, {
-        resource_type: "video"
-      });
+      for (let story of expired.rows) {
+        await cloudinary.uploader.destroy(story.name, { resource_type: "video" });
+      }
+
+      await pool.query("DELETE FROM videos WHERE expires_at <= NOW()");
+
+    } catch (err) {
+      console.error("Cleanup error:", err);
     }
-
-    await pool.query("DELETE FROM videos WHERE expires_at <= NOW()");
-  } catch (err) {
-    console.error("Cleanup error:", err);
-  }
-}, 60 * 60 * 1000); // every 1 hour
+  }, 60 * 60 * 1000); // every 1 hour
+};
 
 /* ------------------- Server Start ------------------- */
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () =>
-  console.log(`Story server running on port ${PORT}`)
-);
+createTable()
+  .then(() => {
+    setupRoutes();
+    setupAutoCleanup();
+    app.listen(PORT, () => console.log(`Story server running on port ${PORT}`));
+  })
+  .catch(err => console.error("Table creation failed:", err));
