@@ -145,3 +145,11 @@ createTable()
     app.listen(PORT, () => console.log(`Story server running on port ${PORT}`));
   })
   .catch(err => console.error("Table creation failed:", err));
+
+
+/* ============ FETCH ==============*/
+app.get("/get/:name", (req,res) => {
+    const name = req.params.name;
+    const message = `${name} server has been pinged`;
+    res.send(message);
+});
